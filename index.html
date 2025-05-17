@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Decentralized File Manager</title>
+  <link rel="icon" type="image/x-icon" href="favicon.png">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+  <style>
+    .action-card {
+      transition: all 0.3s ease;
+      cursor: pointer;
+    }
+    .action-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+    }
+    .upload-btn { background-color: #28a745; }
+    .upload-btn:hover{background-color: rgb(231, 53, 142);}
+    .open-btn { background-color: #17a2b8; }
+    .open-btn:hover{background-color: rgb(231, 53, 142);}
+    .delete-btn { background-color: #dc3545; }
+    .delete-btn:hover{background-color:  rgb(231, 53, 142);}
+
+    .file-icon { color: #6c757d; }
+    .file-icon:hover{background-color: rgb(231, 53, 142);}
+
+    /* Preview modal styles */
+    .preview-modal-img {
+      max-height: 70vh;
+      width: auto;
+    }
+    .file-preview-container {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 200px;
+    }
+  </style>
+</head>
+<body class="bg-light">
+  <div class="container py-5">
+    <div class="row justify-content-center">
+      <div class="col-lg-8">
+        <div class="card shadow-sm mb-4">
+          <div class="card-header bg-primary text-white">
+            <h1 class="h4 mb-0"><i class="fas fa-file-alt me-2"></i>Decentralized File Manager</h1>
+          </div>
+          <div class="card-body">
+            <div class="mb-4">
+              <label for="fileInput" class="form-label">Choose File</label>
+              <div class="input-group">
+                <span class="input-group-text"><i class="fas fa-file file-icon"></i></span>
+                <input type="file" class="form-control" id="fileInput">
+              </div>
+            </div>
+            
+            <div class="d-flex justify-content-between mb-4">
+              <button onclick="handleUpload()" class="btn upload-btn text-white">
+                <i class="fas fa-upload me-2"></i>Upload
+              </button>
+              <button onclick="handleOpen()" class="btn open-btn text-white">
+                <i class="fas fa-folder-open me-2"></i>Open
+              </button>
+              <button onclick="handleDelete()" class="btn delete-btn text-white">
+                <i class="fas fa-trash-alt me-2"></i>Delete
+              </button>
+            </div>
+            
+            <div class="alert alert-info">
+              <i class="fas fa-info-circle me-2"></i>All file actions are recorded on the blockchain.
+            </div>
+
+            <div id="actionsList" class="list-group mt-4"></div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Preview Modal -->
+  <div class="modal fade" id="previewModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="previewModalTitle">File Preview</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body file-preview-container" id="previewModalBody">
+          <!-- Content will be inserted here dynamically -->
+        </div>
+        <div class="modal-footer">
+          <a id="downloadLink" class="btn btn-primary" download>
+            <i class="fas fa-download me-2"></i>Download
+          </a>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bootstrap and Web3 -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/web3@latest/dist/web3.min.js"></script>
+
+  <script>
+    // Replace with your contract info
+    const contractAddress = "0x6ec6445783b5d1dB78CE11c83ff906fF8B7eE3F2";
+    const contractABI = [{
+      "anonymous": false,
+      "inputs": [
+        {"indexed": true,"internalType": "address","name": "user","type": "address"},
+        {"indexed": false,"internalType": "string","name": "action","type": "string"},
+        {"indexed": false,"internalType": "string","name": "fileName","type": "string"},
+        {"indexed": false,"internalType": "uint256","name": "timestamp","type": "uint256"}
+      ],
+      "name": "FileAction",
+      "type": "event"
+    }, {
+      "inputs": [
+        {"internalType": "string","name": "action","type": "string"},
+        {"internalType": "string","name": "fileName","type": "string"}
+      ],
+      "name": "logAction",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    }];
+
+    let web3, contract;
+    // Store uploaded files with their metadata
+    let uploadedFiles = [];
+    const previewModal = new bootstrap.Modal(document.getElementById('previewModal'));
+
+    async function init() {
+      if (window.ethereum) {
+        try {
+          web3 = new Web3(window.ethereum);
+          await window.ethereum.enable();
+          contract = new web3.eth.Contract(contractABI, contractAddress);
+          await loadActions();
+        } catch (err) {
+          showAlert('danger', 'MetaMask Error: ' + err.message);
+        }
+      } else {
+        showAlert('warning', 'Install MetaMask to use the app!');
+      }
+    }
+
+    async function handleUpload() {
+      const fileInput = document.getElementById("fileInput");
+      const file = fileInput.files[0];
+      if (!file) return showAlert('warning', 'Please select a file.');
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('upload_preset', 'unsigned_preset');
+
+      try {
+        showAlert('info', 'Uploading file to Cloudinary...');
+
+        const response = await fetch('https://api.cloudinary.com/v1_1/dk4m5ityn/upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        const data = await response.json();
+        console.log("Cloudinary Response:", data);
+
+        if (data.secure_url) {
+          showAlert('success', 'Upload successful! Logging to blockchain...');
+          
+          // Store file metadata locally
+          uploadedFiles.push({
+            name: file.name,
+            url: data.secure_url,
+            type: file.type,
+            size: file.size,
+            timestamp: Math.floor(Date.now() / 1000)
+          });
+          
+          await logAction('upload', file.name);
+        } else {
+          showAlert('danger', 'Upload failed: ' + JSON.stringify(data));
+        }
+      } catch (err) {
+        showAlert('danger', 'Upload Error: ' + err.message);
+      }
+    }
+
+    async function handleOpen() {
+      if (uploadedFiles.length === 0) {
+        return showAlert('info', 'No files available to open. Please upload files first.');
+      }
+      
+      // Create a simple file selection UI
+      const fileSelector = document.createElement('div');
+      fileSelector.className = 'list-group';
+      
+      uploadedFiles.forEach(file => {
+        const fileItem = document.createElement('button');
+        fileItem.className = 'list-group-item list-group-item-action';
+        fileItem.innerHTML = `
+          <i class="${getFileIcon(file.type)} me-2"></i>
+          ${file.name}
+          <span class="float-end text-muted small">${formatFileSize(file.size)}</span>
+        `;
+        fileItem.onclick = () => openFile(file);
+        fileSelector.appendChild(fileItem);
+      });
+      
+      // Show in modal
+      document.getElementById('previewModalTitle').textContent = 'Select File to Open';
+      document.getElementById('previewModalBody').innerHTML = '';
+      document.getElementById('previewModalBody').appendChild(fileSelector);
+      document.getElementById('downloadLink').style.display = 'none';
+      previewModal.show();
+    }
+
+    function openFile(file) {
+      document.getElementById('previewModalTitle').textContent = file.name;
+      const previewBody = document.getElementById('previewModalBody');
+      const downloadLink = document.getElementById('downloadLink');
+      
+      downloadLink.href = file.url;
+      downloadLink.download = file.name;
+      downloadLink.style.display = 'inline-block';
+      
+      // Clear previous content
+      previewBody.innerHTML = '';
+      
+      // Handle different file types
+      if (file.type.startsWith('image/')) {
+        // Image preview
+        const img = document.createElement('img');
+        img.src = file.url;
+        img.className = 'img-fluid preview-modal-img';
+        img.alt = file.name;
+        previewBody.appendChild(img);
+      } else if (file.type === 'application/pdf') {
+        // PDF preview using PDF.js
+        previewBody.innerHTML = '<canvas id="pdf-preview"></canvas>';
+        pdfjsLib.getDocument(file.url).promise.then(pdf => {
+          pdf.getPage(1).then(page => {
+            const viewport = page.getViewport({ scale: 1.0 });
+            const canvas = document.getElementById('pdf-preview');
+            const context = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            
+            const renderContext = {
+              canvasContext: context,
+              viewport: viewport
+            };
+            
+            page.render(renderContext);
+          });
+        }).catch(err => {
+          previewBody.innerHTML = `
+            <div class="alert alert-warning">
+              <i class="fas fa-exclamation-triangle me-2"></i>
+              Could not render PDF. <a href="${file.url}" target="_blank">Open in new tab</a>
+            </div>
+          `;
+        });
+      } else {
+        // Generic file handler
+        previewBody.innerHTML = `
+          <div class="text-center py-4">
+            <i class="fas ${getFileIcon(file.type)} fa-5x mb-3 text-muted"></i>
+            <p>No preview available for this file type.</p>
+            <p>Click "Download" to save the file.</p>
+          </div>
+        `;
+      }
+      
+      // Log the open action to blockchain
+      logAction('open', file.name);
+    }
+
+    async function handleDelete() {
+      const fileInput = document.getElementById("fileInput");
+      const file = fileInput.files[0];
+      if (!file) return showAlert('warning', 'Please choose a file to delete.');
+      
+      // In a real app, need to implement actual deletion from Cloudinary
+      // For now, we'll just log the delete action
+      try {
+        await logAction('delete', file.name);
+        showAlert('success', `Delete action logged for "${file.name}"`);
+      } catch (err) {
+        showAlert('danger', 'Error logging delete action: ' + err.message);
+      }
+    }
+
+    async function logAction(action, fileName = null) {
+      if (!fileName) {
+        const fileInput = document.getElementById("fileInput");
+        const file = fileInput.files[0];
+        if (!file) return showAlert('warning', 'Please choose a file.');
+        fileName = file.name;
+      }
+
+      try {
+        const accounts = await web3.eth.getAccounts();
+        await contract.methods.logAction(action, fileName).send({ from: accounts[0] });
+        showAlert('success', `Action "${action}" logged for "${fileName}"`);
+        await loadActions();
+      } catch (err) {
+        showAlert('danger', 'Blockchain Log Error: ' + err.message);
+      }
+    }
+
+    async function loadActions() {
+      const actionsList = document.getElementById("actionsList");
+      actionsList.innerHTML = '<div class="text-muted text-center"><i class="fas fa-spinner fa-spin me-2"></i>Loading actions...</div>';
+
+      try {
+        const events = await contract.getPastEvents("FileAction", { fromBlock: 0, toBlock: "latest" });
+
+        if (events.length === 0) {
+          actionsList.innerHTML = '<div class="text-muted text-center">No file actions found.</div>';
+          return;
+        }
+
+        actionsList.innerHTML = '';
+        events.reverse().forEach(({ returnValues }) => {
+          const { user, action, fileName, timestamp } = returnValues;
+          const date = new Date(timestamp * 1000).toLocaleString();
+          let icon = action === 'upload' ? 'fa-upload' : action === 'delete' ? 'fa-trash-alt' : 'fa-folder-open';
+          let color = action === 'upload' ? 'text-success' : action === 'delete' ? 'text-danger' : 'text-info';
+
+          const item = document.createElement("div");
+          item.className = "list-group-item action-card";
+          item.onclick = () => {
+            const file = uploadedFiles.find(f => f.name === fileName);
+            if (file) openFile(file);
+          };
+          item.innerHTML = `
+            <div class="d-flex justify-content-between">
+              <div><i class="fas ${icon} ${color} me-2"></i><strong>${fileName}</strong><div class="small text-muted">${user}</div></div>
+              <div class="text-end small text-muted">${action}<br/>${date}</div>
+            </div>
+          `;
+          actionsList.appendChild(item);
+        });
+      } catch (err) {
+        actionsList.innerHTML = '<div class="text-center"></div>';
+        console.error(err);
+      }
+    }
+
+    function getFileIcon(fileType) {
+      if (!fileType) return 'fa-file';
+      if (fileType.startsWith('image/')) return 'fa-file-image';
+      if (fileType === 'application/pdf') return 'fa-file-pdf';
+      if (fileType.startsWith('text/')) return 'fa-file-alt';
+      if (fileType.includes('spreadsheet') || fileType.includes('excel')) return 'fa-file-excel';
+      if (fileType.includes('word')) return 'fa-file-word';
+      return 'fa-file';
+    }
+
+    function formatFileSize(bytes) {
+      if (bytes === 0) return '0 Bytes';
+      const k = 1024;
+      const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    function showAlert(type, message) {
+      const div = document.createElement("div");
+      div.className = `alert alert-${type} mt-3 alert-dismissible fade show`;
+      div.innerHTML = `<i class="fas fa-info-circle me-2"></i>${message}<button type="button" class="btn-close" data-bs-dismiss="alert"></button>`;
+      const cardBody = document.querySelector(".card-body");
+      const existing = cardBody.querySelector(".alert");
+      if (existing) existing.remove();
+      cardBody.appendChild(div);
+      setTimeout(() => div.remove(), 5000);
+    }
+
+    window.onload = init;
+  </script>
+</body>
+</html>
